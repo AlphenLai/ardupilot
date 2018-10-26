@@ -230,6 +230,10 @@ void AP_BoardConfig::board_autodetect(void)
         // classic or upgraded Pixhawk1
         state.board_type.set(PX4_BOARD_PIXHAWK);
         hal.console->printf("Detected Pixhawk\n");
+    } else if (spi_check_register("mpu9250", MPUREG_WHOAMI, MPU_WHOAMI_MPU9250)) {
+        // PHSLIM has only 1 internal IMU
+        state.board_type.set(PX4_BOARD_PH2SLIM);
+        hal.console->printf("Detected PixhawkSilm\n");
     } else {
         sensor_config_error("Unable to detect board type");
     }
