@@ -11,7 +11,7 @@
  *
  * You should have received a copy of the GNU General Public License along
  * with this program.  If not, see <http://www.gnu.org/licenses/>.
- * 
+ *
  * Code by Andrew Tridgell and Siddharth Bharat Purohit
  */
 #include <AP_HAL/AP_HAL.h>
@@ -19,8 +19,9 @@
 
 #include "Storage.h"
 #include "hwdef/common/flash.h"
-#include "hwdef/common/posix.h"
+#include <AP_Filesystem/AP_Filesystem.h>
 #include "sdcard.h"
+#include <stdio.h>
 
 using namespace ChibiOS;
 
@@ -39,6 +40,8 @@ extern const AP_HAL::HAL& hal;
 #define HAL_STORAGE_BACKUP_FILE "/APM/" SKETCHNAME ".bak"
 #endif
 
+#define STORAGE_FLASH_RETRIES 5
+
 void Storage::_storage_open(void)
 {
     if (_initialised) {
@@ -51,7 +54,7 @@ void Storage::_storage_open(void)
         return;
     }
 #endif
-        
+
     _dirty_mask.clearall();
 
 #if HAL_WITH_RAMTRON
@@ -72,27 +75,27 @@ void Storage::_storage_open(void)
     _flash_load();
 #elif defined(USE_POSIX)
     // allow for fallback to microSD based storage
-    sdcard_init();
-    
-    log_fd = open(HAL_STORAGE_FILE, O_RDWR|O_CREAT);
+    sdcard_retry();
+
+    log_fd = AP::FS().open(HAL_STORAGE_FILE, O_RDWR|O_CREAT);
     if (log_fd == -1) {
-        hal.console->printf("open failed of " HAL_STORAGE_FILE "\n");
+        ::printf("open failed of " HAL_STORAGE_FILE "\n");
         return;
     }
-    int ret = read(log_fd, _buffer, CH_STORAGE_SIZE);
+    int ret = AP::FS().read(log_fd, _buffer, CH_STORAGE_SIZE);
     if (ret < 0) {
-        hal.console->printf("read failed for " HAL_STORAGE_FILE "\n");
-        close(log_fd);
+        ::printf("read failed for " HAL_STORAGE_FILE "\n");
+        AP::FS().close(log_fd);
         log_fd = -1;
         return;
     }
     // pre-fill to full size
-    if (lseek(log_fd, ret, SEEK_SET) != ret ||
-        write(log_fd, &_buffer[ret], CH_STORAGE_SIZE-ret) != CH_STORAGE_SIZE-ret) {
-        hal.console->printf("setup failed for " HAL_STORAGE_FILE "\n");
-        close(log_fd);
+    if (AP::FS().lseek(log_fd, ret, SEEK_SET) != ret ||
+        AP::FS().write(log_fd, &_buffer[ret], CH_STORAGE_SIZE-ret) != CH_STORAGE_SIZE-ret) {
+        ::printf("setup failed for " HAL_STORAGE_FILE "\n");
+        AP::FS().close(log_fd);
         log_fd = -1;
-        return;        
+        return;
     }
     using_filesystem = true;
 #endif
@@ -110,11 +113,11 @@ void Storage::_save_backup(void)
 {
 #ifdef USE_POSIX
     // allow for fallback to microSD based storage
-    sdcard_init();
-    int fd = open(HAL_STORAGE_BACKUP_FILE, O_WRONLY|O_CREAT|O_TRUNC);
+    sdcard_retry();
+    int fd = AP::FS().open(HAL_STORAGE_BACKUP_FILE, O_WRONLY|O_CREAT|O_TRUNC);
     if (fd != -1) {
-        write(fd, _buffer, CH_STORAGE_SIZE);
-        close(fd);
+        AP::FS().write(fd, _buffer, CH_STORAGE_SIZE);
+        AP::FS().close(fd);
     }
 #endif
 }
@@ -128,7 +131,10 @@ void Storage::_save_backup(void)
 */
 void Storage::_mark_dirty(uint16_t loc, uint16_t length)
 {
-    uint16_t end = loc + length;
+    if (length == 0) {
+        return;
+    }
+    uint16_t end = loc + length - 1;
     for (uint16_t line=loc>>CH_STORAGE_LINE_SHIFT;
          line <= end>>CH_STORAGE_LINE_SHIFT;
          line++) {
@@ -186,26 +192,26 @@ void Storage::_timer_tick(void)
             _dirty_mask.clear(i);
         }
         return;
-    } 
+    }
 #endif
 
 #ifdef USE_POSIX
     if (using_filesystem && log_fd != -1) {
         uint32_t offset = CH_STORAGE_LINE_SIZE*i;
-        if (lseek(log_fd, offset, SEEK_SET) != offset) {
+        if (AP::FS().lseek(log_fd, offset, SEEK_SET) != offset) {
             return;
         }
-        if (write(log_fd, &_buffer[offset], CH_STORAGE_LINE_SIZE) != CH_STORAGE_LINE_SIZE) {
+        if (AP::FS().write(log_fd, &_buffer[offset], CH_STORAGE_LINE_SIZE) != CH_STORAGE_LINE_SIZE) {
             return;
         }
-        if (fsync(log_fd) != 0) {
+        if (AP::FS().fsync(log_fd) != 0) {
             return;
         }
         _dirty_mask.clear(i);
         return;
-    } 
+    }
 #endif
-    
+
 #ifdef STORAGE_FLASH_PAGE
     // save to storage backend
     _flash_write(i);
@@ -220,8 +226,8 @@ void Storage::_flash_load(void)
 #ifdef STORAGE_FLASH_PAGE
     _flash_page = STORAGE_FLASH_PAGE;
 
-    hal.console->printf("Storage: Using flash pages %u and %u\n", _flash_page, _flash_page+1);
-    
+    ::printf("Storage: Using flash pages %u and %u\n", _flash_page, _flash_page+1);
+
     if (!_flash.init()) {
         AP_HAL::panic("unable to init flash storage");
     }
@@ -231,7 +237,7 @@ void Storage::_flash_load(void)
 }
 
 /*
-  write one storage line. This also updates _dirty_mask. 
+  write one storage line. This also updates _dirty_mask.
 */
 void Storage::_flash_write(uint16_t line)
 {
@@ -249,20 +255,25 @@ void Storage::_flash_write(uint16_t line)
 bool Storage::_flash_write_data(uint8_t sector, uint32_t offset, const uint8_t *data, uint16_t length)
 {
 #ifdef STORAGE_FLASH_PAGE
-    size_t base_address = stm32_flash_getpageaddr(_flash_page+sector);
-    bool ret = stm32_flash_write(base_address+offset, data, length) == length;
-    if (!ret && _flash_erase_ok()) {
+    size_t base_address = hal.flash->getpageaddr(_flash_page+sector);
+    for (uint8_t i=0; i<STORAGE_FLASH_RETRIES; i++) {
+        if (hal.flash->write(base_address+offset, data, length)) {
+            return true;
+        }
+        hal.scheduler->delay(1);
+    }
+    if (_flash_erase_ok()) {
         // we are getting flash write errors while disarmed. Try
         // re-writing all of flash
         uint32_t now = AP_HAL::millis();
         if (now - _last_re_init_ms > 5000) {
             _last_re_init_ms = now;
             bool ok = _flash.re_initialise();
-            hal.console->printf("Storage: failed at %u:%u for %u - re-init %u\n",
-                                (unsigned)sector, (unsigned)offset, (unsigned)length, (unsigned)ok);
+            ::printf("Storage: failed at %u:%u for %u - re-init %u\n",
+                     (unsigned)sector, (unsigned)offset, (unsigned)length, (unsigned)ok);
         }
     }
-    return ret;
+    return false;
 #else
     return false;
 #endif
@@ -273,7 +284,7 @@ bool Storage::_flash_write_data(uint8_t sector, uint32_t offset, const uint8_t *
  */
 bool Storage::_flash_read_data(uint8_t sector, uint32_t offset, uint8_t *data, uint16_t length)
 {
-    size_t base_address = stm32_flash_getpageaddr(_flash_page+sector);
+    size_t base_address = hal.flash->getpageaddr(_flash_page+sector);
     const uint8_t *b = ((const uint8_t *)base_address)+offset;
     memcpy(data, b, length);
     return true;
@@ -284,7 +295,13 @@ bool Storage::_flash_read_data(uint8_t sector, uint32_t offset, uint8_t *data, u
  */
 bool Storage::_flash_erase_sector(uint8_t sector)
 {
-    return stm32_flash_erasepage(_flash_page+sector);
+    for (uint8_t i=0; i<STORAGE_FLASH_RETRIES; i++) {
+        if (hal.flash->erasepage(_flash_page+sector)) {
+            return true;
+        }
+        hal.scheduler->delay(1);
+    }
+    return false;
 }
 
 /*
@@ -303,6 +320,28 @@ bool Storage::_flash_erase_ok(void)
 bool Storage::healthy(void)
 {
     return _initialised && AP_HAL::millis() - _last_empty_ms < 2000;
+}
+
+/*
+  erase all storage
+ */
+bool Storage::erase(void)
+{
+#if HAL_WITH_RAMTRON
+    if (using_fram) {
+        return AP_HAL::Storage::erase();
+    }
+#endif
+#ifdef USE_POSIX
+    if (using_filesystem) {
+        return AP_HAL::Storage::erase();
+    }
+#endif
+#ifdef STORAGE_FLASH_PAGE
+    return _flash.erase();
+#else
+    return false;
+#endif
 }
 
 #endif // HAL_USE_EMPTY_STORAGE

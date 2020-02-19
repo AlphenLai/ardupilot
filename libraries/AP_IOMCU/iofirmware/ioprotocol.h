@@ -1,8 +1,13 @@
+#pragma once
+
+#include <stdint.h>
+#include <AP_Common/AP_Common.h>
 /*
   common protocol definitions between AP_IOMCU and iofirmware
  */
 
-#define PKT_MAX_REGS 32
+// 22 is enough for the rc_input page in one transfer
+#define PKT_MAX_REGS 22
 #define IOMCU_MAX_CHANNELS 16
 
 //#define IOMCU_DEBUG
@@ -49,7 +54,8 @@ enum iopage {
     PAGE_SETUP = 50,
     PAGE_DIRECT_PWM = 54,
     PAGE_FAILSAFE_PWM = 55,
-    PAGE_DISARMED_PWM = 108,
+    PAGE_SAFETY_PWM = 108,
+    PAGE_MIXING = 200,
 };
 
 // setup page registers
@@ -76,6 +82,13 @@ enum iopage {
 #define PAGE_REG_SETUP_SBUS_RATE    19
 #define PAGE_REG_SETUP_IGNORE_SAFETY 20 /* bitmask of surfaces to ignore the safety status */
 #define PAGE_REG_SETUP_HEATER_DUTY_CYCLE 21
+#define PAGE_REG_SETUP_DSM_BIND     22
+
+// config page registers
+#define PAGE_CONFIG_PROTOCOL_VERSION  0
+#define PAGE_CONFIG_PROTOCOL_VERSION2 1
+#define IOMCU_PROTOCOL_VERSION       4
+#define IOMCU_PROTOCOL_VERSION2     10
 
 // magic value for rebooting to bootloader
 #define REBOOT_BL_MAGIC 14662
@@ -84,49 +97,66 @@ enum iopage {
 #define PAGE_REG_SETUP_FORCE_SAFETY_ON  14
 #define FORCE_SAFETY_MAGIC 22027
 
-struct PACKED page_reg_status {
-    uint16_t freemem;
-    uint16_t cpuload;
-
-    // status flags
-    uint16_t flag_outputs_armed:1;
-    uint16_t flag_override:1;
-    uint16_t flag_rc_ok:1;
-    uint16_t flag_rc_ppm:1;
-    uint16_t flag_rc_dsm:1;
-    uint16_t flag_rc_sbus:1;
-    uint16_t flag_fmu_ok:1;
-    uint16_t flag_raw_pwm:1;
-    uint16_t flag_mixer_ok:1;
-    uint16_t flag_arm_sync:1;
-    uint16_t flag_init_ok:1;
-    uint16_t flag_failsafe:1;
-    uint16_t flag_safety_off:1;
-    uint16_t flag_fmu_initialised:1;
-    uint16_t flag_rc_st24:1;
-    uint16_t flag_rc_sumd_srxl:1;
-
-    uint16_t alarms;
-    uint16_t vbatt;
-    uint16_t ibatt;
-    uint16_t vservo;
-    uint16_t vrssi;
-    uint16_t prssi;
+struct page_config {
+    uint16_t protocol_version;
+    uint16_t protocol_version2;
 };
 
-struct PACKED page_rc_input {
-    uint16_t count;
-    uint16_t flags_frame_drop:1;
-    uint16_t flags_failsafe:1;
-    uint16_t flags_dsm11:1;
-    uint16_t flags_mapping_ok:1;
-    uint16_t flags_rc_ok:1;
-    uint16_t flags_unused:11;
-    uint16_t nrssi;
-    uint16_t data;
-    uint16_t frame_count;
-    uint16_t lost_frame_count;
+struct page_reg_status {
+    uint16_t freemem;
+    uint32_t timestamp_ms;
+    uint16_t vservo;
+    uint16_t vrssi;
+    uint32_t num_errors;
+    uint32_t total_pkts;
+    uint8_t flag_safety_off;
+    uint8_t err_crc;
+    uint8_t err_bad_opcode;
+    uint8_t err_read;
+    uint8_t err_write;
+    uint8_t err_uart;
+};
+
+struct page_rc_input {
+    uint8_t count;
+    uint8_t flags_failsafe:1;
+    uint8_t flags_rc_ok:1;
+    uint8_t rc_protocol;
     uint16_t pwm[IOMCU_MAX_CHANNELS];
-    uint16_t last_frame_count;
-    uint32_t last_input_us;
+    int16_t rssi;
+};
+
+/*
+  data for mixing on FMU failsafe
+ */
+struct page_mixing {
+    uint16_t servo_min[IOMCU_MAX_CHANNELS];
+    uint16_t servo_max[IOMCU_MAX_CHANNELS];
+    uint16_t servo_trim[IOMCU_MAX_CHANNELS];
+    uint8_t servo_function[IOMCU_MAX_CHANNELS];
+    uint8_t servo_reversed[IOMCU_MAX_CHANNELS];
+
+    // RC input arrays are in AETR order
+    uint16_t rc_min[4];
+    uint16_t rc_max[4];
+    uint16_t rc_trim[4];
+    uint8_t rc_reversed[IOMCU_MAX_CHANNELS];
+    uint8_t rc_channel[4];
+
+    // gain for elevon and vtail mixing, x1000
+    uint16_t mixing_gain;
+
+    // channel which when high forces mixer
+    int8_t rc_chan_override;
+
+    // is the throttle an angle input?
+    uint8_t throttle_is_angle;
+
+    // mask of channels which are pure manual in override
+    uint16_t manual_rc_mask;
+
+    // enabled needs to be 1 to enable mixing
+    uint8_t enabled;
+
+    uint8_t pad; // pad to even size
 };

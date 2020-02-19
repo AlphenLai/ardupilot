@@ -58,6 +58,7 @@ public:
         DEVTYPE_MAG3110  = 0x0E,
         DEVTYPE_SITL  = 0x0F,
         DEVTYPE_IST8308 = 0x10,
+		DEVTYPE_RM3100 = 0x11,
     };
 
 
@@ -111,7 +112,7 @@ protected:
     Compass &_compass;
 
     // semaphore for access to shared frontend data
-    HAL_Semaphore_Recursive _sem;
+    HAL_Semaphore _sem;
 
     // Check that the compass field is valid by using a mean filter on the vector length
     bool field_ok(const Vector3f &field);
