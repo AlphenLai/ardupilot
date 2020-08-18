@@ -6,6 +6,8 @@ class Scheduler;
 class SITL_State;
 class Storage;
 class AnalogIn;
+class I2CDevice;
+class I2CDeviceManager;
 class RCInput;
 class RCOutput;
 class ADCSource;
@@ -14,6 +16,7 @@ class Util;
 class Semaphore;
 class GPIO;
 class DigitalSource;
+class DSP;
 class HALSITLCAN;
 class HALSITLCANDriver;
 }  // namespace HALSITL

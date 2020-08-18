@@ -52,7 +52,6 @@ class Board:
 
             env.DEFINES.update(
                 ENABLE_SCRIPTING = 1,
-                ENABLE_HEAP = 1,
                 LUA_32BITS = 1,
                 )
 
@@ -123,6 +122,7 @@ class Board:
             '-Werror=parentheses',
             '-Werror=format-extra-args',
             '-Werror=ignored-qualifiers',
+            '-DARDUPILOT_BUILD',
         ]
 
         if cfg.options.scripting_checks:
@@ -154,10 +154,17 @@ class Board:
                 '-g',
                 '-O0',
             ]
+            env.DEFINES.update(
+                HAL_DEBUG_BUILD = 1,
+            )
 
         if cfg.options.bootloader:
             # don't let bootloaders try and pull scripting in
             cfg.options.disable_scripting = True
+        else:
+            env.DEFINES.update(
+                ENABLE_HEAP = 1,
+            )
 
         if cfg.options.enable_math_check_indexes:
             env.CXXFLAGS += ['-DMATH_CHECK_INDEXES']
@@ -173,7 +180,6 @@ class Board:
             '-Wall',
             '-Wextra',
             '-Wpointer-arith',
-            '-Wcast-align',
             '-Wundef',
             '-Wno-unused-parameter',
             '-Wno-missing-field-initializers',
@@ -181,6 +187,7 @@ class Board:
             '-Wno-redundant-decls',
             '-Wno-unknown-pragmas',
             '-Wno-expansion-to-defined',
+            '-Werror=cast-align',
             '-Werror=attributes',
             '-Werror=format-security',
             '-Werror=format-extra-args',
@@ -202,6 +209,7 @@ class Board:
             '-Wfatal-errors',
             '-Wno-trigraphs',
             '-Werror=parentheses',
+            '-DARDUPILOT_BUILD',
         ]
 
         if 'clang++' in cfg.env.COMPILER_CXX:
@@ -246,6 +254,15 @@ class Board:
                     '-Werror=implicit-fallthrough',
                 ]
 
+        if cfg.options.Werror:
+            errors = ['-Werror',
+                      '-Werror=missing-declarations',
+                      '-Werror=float-equal',
+                      '-Werror=undef',
+                    ]
+            env.CFLAGS += errors
+            env.CXXFLAGS += errors
+
         if cfg.env.DEBUG:
             env.CXXFLAGS += [
                 '-g',
@@ -287,6 +304,11 @@ class Board:
         # We always want to use PRI format macros
         cfg.define('__STDC_FORMAT_MACROS', 1)
 
+        if cfg.options.disable_ekf2:
+            env.CXXFLAGS += ['-DHAL_NAVEKF2_AVAILABLE=0']
+
+        if cfg.options.disable_ekf3:
+            env.CXXFLAGS += ['-DHAL_NAVEKF3_AVAILABLE=0']
 
     def pre_build(self, bld):
         '''pre-build hook that gets called before dynamic sources'''
@@ -377,6 +399,12 @@ class sitl(Board):
                 '-O3',
             ]
 
+        if 'clang++' in cfg.env.COMPILER_CXX and cfg.options.asan:
+            env.CXXFLAGS += [
+                '-fsanitize=address',
+                '-fno-omit-frame-pointer',
+            ]
+
         env.LIB += [
             'm',
         ]
@@ -385,6 +413,10 @@ class sitl(Board):
         cfg.check_feenableexcept()
 
         env.LINKFLAGS += ['-pthread',]
+
+        if cfg.env.DEBUG and 'clang++' in cfg.env.COMPILER_CXX and cfg.options.asan:
+             env.LINKFLAGS += ['-fsanitize=address']
+
         env.AP_LIBRARIES += [
             'AP_HAL_SITL',
             'SITL',
@@ -394,12 +426,21 @@ class sitl(Board):
             if not cfg.check_SFML(env):
                 cfg.fatal("Failed to find SFML libraries")
 
+        import fnmatch
         if cfg.options.sitl_osd:
-            env.CXXFLAGS += ['-DWITH_SITL_OSD','-DOSD_ENABLED=ENABLED','-DHAL_HAVE_AP_ROMFS_EMBEDDED_H']
-            import fnmatch
+            env.CXXFLAGS += ['-DWITH_SITL_OSD','-DOSD_ENABLED=1']
             for f in os.listdir('libraries/AP_OSD/fonts'):
                 if fnmatch.fnmatch(f, "font*bin"):
                     env.ROMFS_FILES += [(f,'libraries/AP_OSD/fonts/'+f)]
+
+        # embed any scripts from ROMFS/scripts
+        if os.path.exists('ROMFS/scripts'):
+            for f in os.listdir('ROMFS/scripts'):
+                if fnmatch.fnmatch(f, "*.lua"):
+                    env.ROMFS_FILES += [('scripts/'+f,'ROMFS/scripts/'+f)]
+
+        if len(env.ROMFS_FILES) > 0:
+            env.CXXFLAGS += ['-DHAL_HAVE_AP_ROMFS_EMBEDDED_H']
 
         if cfg.options.sitl_rgbled:
             env.CXXFLAGS += ['-DWITH_SITL_RGBLED']
@@ -439,6 +480,7 @@ class chibios(Board):
         env.DEFINES.update(
             CONFIG_HAL_BOARD = 'HAL_BOARD_CHIBIOS',
             HAVE_STD_NULLPTR_T = 0,
+            USE_LIBC_REALLOC = 0,
         )
 
         env.AP_LIBRARIES += [
@@ -453,11 +495,6 @@ class chibios(Board):
             '-Wframe-larger-than=1300',
             '-fsingle-precision-constant',
             '-Wno-attributes',
-            '-Wno-error=double-promotion',
-            '-Wno-error=missing-declarations',
-            '-Wno-error=float-equal',
-            '-Wno-error=undef',
-            '-Wno-error=cpp',
             '-fno-exceptions',
             '-Wall',
             '-Wextra',
@@ -490,7 +527,18 @@ class chibios(Board):
             '--specs=nano.specs',
             '-specs=nosys.specs',
             '-DCHIBIOS_BOARD_NAME="%s"' % self.name,
+            '-D__USE_CMSIS',
+            '-Werror=deprecated-declarations'
         ]
+        if not cfg.options.Werror:
+            env.CFLAGS += [
+            '-Wno-error=double-promotion',
+            '-Wno-error=missing-declarations',
+            '-Wno-error=float-equal',
+            '-Wno-error=undef',
+            '-Wno-error=cpp',
+            ]
+
         env.CXXFLAGS += env.CFLAGS + [
             '-fno-rtti',
             '-fno-threadsafe-statics',
@@ -551,6 +599,10 @@ class chibios(Board):
             'ChibiOS',
         ]
 
+        env.INCLUDES += [
+            cfg.srcnode.find_dir('libraries/AP_GyroFFT/CMSIS_5/include').abspath()
+        ]
+
         try:
             import intelhex
             env.HAVE_INTEL_HEX = True
@@ -566,12 +618,12 @@ class chibios(Board):
 
     def pre_build(self, bld):
         '''pre-build hook that gets called before dynamic sources'''
-        super(chibios, self).pre_build(bld)
         from waflib.Context import load_tool
         module = load_tool('chibios', [], with_sys_path=True)
         fun = getattr(module, 'pre_build', None)
         if fun:
             fun(bld)
+        super(chibios, self).pre_build(bld)
 
 class linux(Board):
     def configure_env(self, cfg, env):
